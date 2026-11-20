@@ -1,0 +1,149 @@
+"""Recurring expenses & bills (/api/v1/recurring).
+
+Lists take an optional ``family_id`` (absent → my personal rules; present → that family's rules,
+404 unless I'm an active member). Rules outside my visibility are 404; family rules I can see
+but may not edit are 403 (members edit only rules they created; viewers never).
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Depends, Query, status
+
+from app.api.deps import Client, CurrentPrincipal, DbSession
+from app.schemas.recurring import (
+    MarkPaidRequest,
+    OccurrenceOut,
+    RecurringCreate,
+    RecurringOut,
+    RecurringUpdate,
+    UpcomingOut,
+)
+from app.services.recurring import MAX_UPCOMING_DAYS, RecurringService
+from app.utils.pagination import Page, Pagination
+
+router = APIRouter(prefix="/recurring", tags=["recurring"])
+
+
+def get_recurring_service(db: DbSession) -> RecurringService:
+    return RecurringService(db)
+
+
+RecurringSvc = Annotated[RecurringService, Depends(get_recurring_service)]
+FamilyQuery = Annotated[
+    uuid.UUID | None, Query(description="Family scope; omit for personal rules")
+]
+
+
+# --- static paths first (before /{rule_id}) ---------------------------------------------
+
+
+@router.get("/upcoming")
+async def upcoming(
+    principal: CurrentPrincipal,
+    svc: RecurringSvc,
+    family_id: FamilyQuery = None,
+    days: Annotated[int, Query(ge=0, le=MAX_UPCOMING_DAYS)] = 30,
+    include_overdue: bool = True,
+) -> list[UpcomingOut]:
+    """Occurrences due today..today+days (my time zone) of active rules, generated or not,
+    plus still-unpaid overdue ones (``include_overdue``). Sorted by due date."""
+    return await svc.upcoming(principal.user, family_id, days, include_overdue=include_overdue)
+
+
+@router.post("/occurrences/{transaction_id}/mark-paid")
+async def mark_paid(
+    transaction_id: uuid.UUID,
+    principal: CurrentPrincipal,
+    svc: RecurringSvc,
+    client: Client,
+    body: MarkPaidRequest | None = None,
+) -> OccurrenceOut:
+    """Confirm payment: status → completed, verification → user_confirmed."""
+    return await svc.mark_paid(principal.user, transaction_id, body or MarkPaidRequest(), client)
+
+
+@router.post("/occurrences/{transaction_id}/skip")
+async def skip_occurrence(
+    transaction_id: uuid.UUID, principal: CurrentPrincipal, svc: RecurringSvc, client: Client
+) -> OccurrenceOut:
+    """Skip an unpaid occurrence: status → cancelled."""
+    return await svc.skip(principal.user, transaction_id, client)
+
+
+@router.post("/occurrences/{transaction_id}/unmark")
+async def unmark_occurrence(
+    transaction_id: uuid.UUID, principal: CurrentPrincipal, svc: RecurringSvc, client: Client
+) -> OccurrenceOut:
+    """Undo mark-paid or skip: status → pending, verification → unverified."""
+    return await svc.unmark(principal.user, transaction_id, client)
+
+
+# --- rules ------------------------------------------------------------------------------
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_rule(
+    body: RecurringCreate, principal: CurrentPrincipal, svc: RecurringSvc, client: Client
+) -> RecurringOut:
+    return await svc.create(principal.user, body, client)
+
+
+@router.get("")
+async def list_rules(
+    principal: CurrentPrincipal,
+    svc: RecurringSvc,
+    page: Pagination,
+    family_id: FamilyQuery = None,
+    status: Literal["active", "paused", "ended"] | None = None,
+) -> Page[RecurringOut]:
+    return await svc.list_rules(principal.user, family_id, page, status)
+
+
+@router.get("/{rule_id}")
+async def get_rule(
+    rule_id: uuid.UUID, principal: CurrentPrincipal, svc: RecurringSvc
+) -> RecurringOut:
+    return await svc.get_rule(principal.user, rule_id)
+
+
+@router.patch("/{rule_id}")
+async def update_rule(
+    rule_id: uuid.UUID,
+    body: RecurringUpdate,
+    principal: CurrentPrincipal,
+    svc: RecurringSvc,
+    client: Client,
+) -> RecurringOut:
+    return await svc.update(principal.user, rule_id, body, client)
+
+
+@router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_rule(
+    rule_id: uuid.UUID, principal: CurrentPrincipal, svc: RecurringSvc, client: Client
+) -> None:
+    await svc.delete(principal.user, rule_id, client)
+
+
+@router.post("/{rule_id}/pause")
+async def pause_rule(
+    rule_id: uuid.UUID, principal: CurrentPrincipal, svc: RecurringSvc, client: Client
+) -> RecurringOut:
+    return await svc.set_paused(principal.user, rule_id, True, client)
+
+
+@router.post("/{rule_id}/resume")
+async def resume_rule(
+    rule_id: uuid.UUID, principal: CurrentPrincipal, svc: RecurringSvc, client: Client
+) -> RecurringOut:
+    return await svc.set_paused(principal.user, rule_id, False, client)
+
+
+@router.get("/{rule_id}/occurrences")
+async def list_occurrences(
+    rule_id: uuid.UUID, principal: CurrentPrincipal, svc: RecurringSvc, page: Pagination
+) -> Page[OccurrenceOut]:
+    """Transactions generated by the rule, latest period first."""
+    return await svc.list_occurrences(principal.user, rule_id, page)

@@ -1,0 +1,18 @@
+# Runtime dependencies (top-level). Pinned set lives in requirements.txt:
+#   uv pip compile requirements.in -o requirements.txt --python-version 3.12
+fastapi
+uvicorn[standard]
+pydantic[email]
+pydantic-settings
+sqlalchemy[asyncio]
+asyncpg
+alembic
+argon2-cffi
+pyjwt
+structlog
+python-multipart
+pillow
+httpx
+python-dateutil
+aiosmtplib
+tzdata

@@ -1,0 +1,82 @@
+# Local development stack: API, background worker, PostgreSQL, Mailpit.
+# PostgreSQL is the only stateful dependency (rate limits and background jobs live there too).
+#   cp .env.example .env && docker compose up -d --build
+# Host ports can be changed with POSTGRES_PORT / API_PORT / MAILPIT_*_PORT.
+name: family-budget
+
+x-backend-env: &backend-env
+  # Inside the compose network services are reached by name, overriding .env host values.
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/family_budget
+  TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/family_budget_test
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  UPLOAD_DIR: /data/uploads
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: family_budget
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d family_budget"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+
+  api:
+    build:
+      context: ./backend
+      target: dev
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ./backend
+      target: dev
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.worker"]
+    volumes:
+      - ./backend:/app
+      - uploads:/data/uploads
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  uploads:

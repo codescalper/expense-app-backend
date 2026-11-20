@@ -1,0 +1,8 @@
+# Dev/test tooling. Pinned set: uv pip compile requirements-dev.in -o requirements-dev.txt --python-version 3.12
+-c requirements.txt
+pytest
+pytest-asyncio
+httpx
+ruff
+mypy
+pip-audit

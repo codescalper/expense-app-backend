@@ -1,0 +1,16 @@
+{
+  "builds": [
+    {
+      "id": "fb-mobile-2026-11-20",
+      "date": "2026-11-20",
+      "surface": "mobile app shell (Expo React Native)",
+      "macrostructure": "app-shell/bottom-tabs+stacks (Step 2.5 rotation skipped: app-shell screens)",
+      "archetypes": {"nav": "bottom-tab-bar + centre quick-add FAB", "hero": "single hero-balance card (Unbounded numeral)", "lists": "linear-dense rows with inline status pills", "empty": "tinted icon tile + one line + one action"},
+      "mood": "premium",
+      "palette_seed": 8,
+      "modes": ["light", "dark"],
+      "contrast": "both matrices recorded in style-lock.md",
+      "type": "Unbounded 600 + Inter 400/500/600"
+    }
+  ]
+}

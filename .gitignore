@@ -1,0 +1,38 @@
+# Secrets — never commit real environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data
+backend/data/
+uploads/
+
+# The Expo mobile app lives in its own repository (github.com/codescalper/expense-app),
+# checked out at ./mobile for local development.
+/mobile/
+
+# Node
+node_modules/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+
+# Local backups and tool caches
+backups/
+/backend/C:/
