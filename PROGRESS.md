@@ -118,3 +118,27 @@ Changes in this pass:
 
 Waves of parallel work: schema + families → finance core, planning, notifications backend →
 UPI, reports backend + mobile feature screens → integration pass. See git history / this file.
+
+## Production deployment (2026-11-21)
+
+- **API:** https://expense-app-backend-psi.vercel.app (Vercel, project `expense-app-backend`, account
+  codescalper, Hobby plan, function region `iad1` next to Neon `us-east-2`).
+- **Database:** Neon Postgres 18, migrated to revision `0004` (`backend/scripts/migrate_remote.sh`).
+- **Storage:** Neon S3-compatible bucket `expense` (private; downloads stream through the API).
+- **Email:** Gmail SMTP, `EMAIL_DELIVERY=inline`.
+- **Cron:** Vercel daily cron (`17 3 * * *`) hits `/internal/cron/tick`. For timely reminders and
+  push on Hobby, add an external pinger (cron-job.org) every 5 min with
+  `Authorization: Bearer <CRON_SECRET>` (see docs/VERCEL.md).
+- **Verified live (25/25 end-to-end checks):** health/ready, docs hidden, cron auth, real verification
+  email via Gmail, register/login/refresh, accounts + balances, built-in categories, expenses,
+  UPI initiate/idempotent replay/never-counted-before-confirm/confirm, avatar upload+download via S3,
+  budgets, dashboard, reports, CSV export, cron tick, cross-user isolation (404), account deletion.
+
+## Mobile release
+
+- APK: `dist/FamilyBudget-1.0.0-arm64.apk` (release, R8 + resource shrinking, arm64-v8a, ~20 MB),
+  default server = the production API (changeable on the login screen under Server).
+- Verified: tsc, expo lint, 519 jest tests, expo-doctor 20/20, design gates (anti-slop, motion,
+  coherence) clean, permissions audited (no audio/location/overlay).
+- **Not yet verified on a physical device** (user chose to test it). Signed with the debug keystore:
+  fine for sideloading; see mobile/docs/RELEASE.md for a Play Store upload key.
