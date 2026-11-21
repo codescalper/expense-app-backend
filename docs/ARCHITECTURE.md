@@ -5,6 +5,9 @@ categories / payees / transactions / attachments, UPI intent payments, budgets, 
 savings goals, notifications + Expo push, reports, dashboard. Mobile feature screens are still
 being built. Remaining planned items are listed in §6.
 
+Serverless deployment (Vercel + Neon: inline email delivery, `/internal/cron/tick` instead of
+the worker, object storage): [VERCEL.md](VERCEL.md).
+
 Related: [ER.md](ER.md) · [SECURITY.md](SECURITY.md) · [ENVIRONMENT.md](ENVIRONMENT.md) ·
 [DEPLOYMENT.md](DEPLOYMENT.md)
 
@@ -18,7 +21,7 @@ Related: [ER.md](ER.md) · [SECURITY.md](SECURITY.md) · [ENVIRONMENT.md](ENVIRO
 | Database | PostgreSQL 17 locally (`postgres:17-alpine`), Neon for staging/prod | `docker-compose.yml`, [NEON.md](NEON.md) |
 | Migrations | Alembic (async env) | `backend/alembic/` |
 | Email | SMTP. Dev uses Mailpit (UI at http://localhost:8025) | `backend/app/services/email.py` |
-| File storage | Local disk under `UPLOAD_DIR` (avatars, family images, receipts). S3-compatible storage is planned | `backend/app/services/storage.py` |
+| File storage | `FileStorage` interface: local disk under `UPLOAD_DIR` (default), a private S3-compatible bucket (`STORAGE_BACKEND=s3`, e.g. Neon object storage) or a private Vercel Blob store. Files are always served through authenticated endpoints | `backend/app/services/storage.py`, `s3_storage.py`, `blob_storage.py` |
 | Push | Expo push API, called only by the worker's push sender | `backend/app/services/push.py` |
 
 **PostgreSQL is the only stateful dependency, by design. There is no Redis.** Rate-limit
@@ -388,7 +391,6 @@ mobile/src/
 
 ## 6. Planned (later phases)
 
-- S3-compatible object storage behind the existing `LocalFileStorage` interface.
 - Bank / PSP integration or statement import that could set `verification=verified` (today
   nothing does: UPI outcomes are user-confirmed only).
 - Transaction import (`source=import` exists in the schema; no importer yet).

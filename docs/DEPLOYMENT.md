@@ -1,5 +1,8 @@
 # Deployment
 
+> Deploying to **Vercel** (serverless) with Neon instead? See [VERCEL.md](VERCEL.md). This
+> page covers the Docker image (self-hosted / any container platform).
+
 The backend deploys as **one Docker image** that runs three ways:
 
 1. A **release job** that runs `alembic upgrade head`.

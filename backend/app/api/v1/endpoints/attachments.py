@@ -6,9 +6,10 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 
 from app.api.deps import AppSettings, Client, CurrentPrincipal, DbSession
+from app.api.files import stored_file_response
 from app.core.errors import PayloadTooLargeError
 from app.schemas.attachments import AttachmentOut
 from app.services.attachments import AttachmentService
@@ -51,19 +52,19 @@ async def list_attachments(
     return await svc.list_for_transaction(principal.user, transaction_id)
 
 
-@router.get("/{transaction_id}/attachments/{attachment_id}/download", response_class=FileResponse)
+@router.get("/{transaction_id}/attachments/{attachment_id}/download", response_class=Response)
 async def download_attachment(
     transaction_id: uuid.UUID,
     attachment_id: uuid.UUID,
     principal: CurrentPrincipal,
     svc: AttachmentSvc,
-) -> FileResponse:
+) -> Response:
     f = await svc.file(principal.user, transaction_id, attachment_id)
-    return FileResponse(
-        f.path,
+    return stored_file_response(
+        f.file,
         media_type=f.content_type,
         filename=f.filename,
-        content_disposition_type="attachment",
+        disposition="attachment",
         headers={"Cache-Control": "private, no-store"},
     )
 

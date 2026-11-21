@@ -34,7 +34,11 @@ def build_engine(settings: Settings, url: str | None = None) -> AsyncEngine:
         # Transaction-mode poolers can't keep named prepared statements per connection.
         connect_args["statement_cache_size"] = 0
         connect_args["prepared_statement_name_func"] = lambda: f"__asyncpg_{uuid.uuid4()}__"
-    if settings.environment == "test":
+    if settings.environment == "test" or settings.serverless:
+        # Serverless: an instance may be frozen or replaced (with a new event loop) between
+        # invocations, so pooled asyncpg connections can't be trusted to survive. Each session
+        # opens a connection on first use and closes it at the end; Neon's pooler (PgBouncer)
+        # does the real pooling. Nothing connects at import time.
         kwargs["poolclass"] = NullPool
     else:
         kwargs["pool_size"] = settings.db_pool_size

@@ -15,7 +15,6 @@ from __future__ import annotations
 import secrets
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import NoReturn
 
 from sqlalchemy.exc import IntegrityError
@@ -59,7 +58,7 @@ from app.services.auth import ClientInfo
 from app.services.email import SEND_EMAIL_JOB
 from app.services.family_emails import family_invitation_email, invitation_deep_link
 from app.services.notify import notify, notify_family_members
-from app.services.storage import LocalFileStorage, process_avatar
+from app.services.storage import StoredFile, discard, get_storage, process_avatar
 
 INVITATION_TTL = timedelta(days=7)
 INVITE_RATE_LIMIT = 20  # invitations created per user per window
@@ -87,7 +86,7 @@ class FamilyService:
         self.jobs = JobRepository(session)
         # Shares the request's connection/transaction (no second pooled connection).
         self.limiter = RateLimiter(session)
-        self.storage = LocalFileStorage(settings.upload_dir)
+        self.storage = get_storage(settings)
 
     # ------------------------------------------------------------------ helpers
 
@@ -253,19 +252,24 @@ class FamilyService:
         image = await run_limited("image", 2, process_avatar, raw, self.settings.max_avatar_bytes)
         family = await self._live_family(family_id, for_update=True)
         old_key = family.avatar_key
-        family.avatar_key = self.storage.save(FAMILY_IMAGE_FOLDER, image, "jpg")
-        self._audit(
-            "family.image_updated",
-            user,
-            client,
-            family_id=family.id,
-            entity_type="family",
-            entity_id=family.id,
-        )
-        await self.db.commit()
+        new_key = await self.storage.save(FAMILY_IMAGE_FOLDER, image, "jpg")
+        try:
+            family.avatar_key = new_key
+            self._audit(
+                "family.image_updated",
+                user,
+                client,
+                family_id=family.id,
+                entity_type="family",
+                entity_id=family.id,
+            )
+            await self.db.commit()
+        except BaseException:
+            await discard(self.storage, new_key)  # no orphaned file when the DB write fails
+            raise
         await self.db.refresh(family)
         if old_key:
-            self.storage.delete(old_key)
+            await discard(self.storage, old_key)
         return await self._detail(family, member.role)
 
     async def remove_image(self, user: User, family_id: uuid.UUID, client: ClientInfo) -> None:
@@ -283,15 +287,15 @@ class FamilyService:
                 entity_id=family.id,
             )
             await self.db.commit()
-            self.storage.delete(old_key)
+            await discard(self.storage, old_key)
 
-    async def image_path(self, user: User, family_id: uuid.UUID) -> Path:
+    async def image_file(self, user: User, family_id: uuid.UUID) -> StoredFile:
         await require_family_access(self.db, user, family_id)
         family = await self._live_family(family_id)
-        path = self.storage.path_for(family.avatar_key) if family.avatar_key else None
-        if path is None:
+        stored = await self.storage.open(family.avatar_key) if family.avatar_key else None
+        if stored is None:
             raise NotFoundError("No family image")
-        return path
+        return stored
 
     # ------------------------------------------------------------------ invitations (admin side)
 

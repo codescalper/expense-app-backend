@@ -10,9 +10,10 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 
 from app.api.deps import AppSettings, Client, CurrentPrincipal, DbSession
+from app.api.files import stored_file_response
 from app.core.errors import PayloadTooLargeError
 from app.models.enums import FamilyRole
 from app.schemas.family import (
@@ -153,13 +154,14 @@ async def upload_family_image(
     return await svc.set_image(principal.user, family_id, raw, client)
 
 
-@router.get("/{family_id}/image", response_class=FileResponse)
+@router.get("/{family_id}/image", response_class=Response)
 async def get_family_image(
     family_id: uuid.UUID, principal: CurrentPrincipal, svc: FamilySvc
-) -> FileResponse:
-    return FileResponse(
-        await svc.image_path(principal.user, family_id),
+) -> Response:
+    return stored_file_response(
+        await svc.image_file(principal.user, family_id),
         media_type="image/jpeg",
+        disposition="inline",
         headers={"Cache-Control": "private, max-age=300"},
     )
 

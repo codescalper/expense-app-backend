@@ -8,24 +8,37 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Annotated, Literal
 
-from fastapi import Depends, Request
+from fastapi import BackgroundTasks, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.errors import UnauthorizedError
+from app.core.outbox import start_collecting, stop_collecting
 from app.core.rate_limit import RateLimiter, client_ip
 from app.core.security import decode_access_token, utcnow
 from app.db.session import get_db
 from app.models.user import User, UserSession
 from app.services.auth import AuthService, ClientInfo
 from app.services.users import UserService
+from app.workers.inline import deliver_enqueued_jobs
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 
 _bearer = HTTPBearer(auto_error=False, description="Access token from /auth/login")
+
+
+async def inline_job_delivery(background_tasks: BackgroundTasks, settings: AppSettings) -> None:
+    """Router-wide dependency. With ``EMAIL_DELIVERY=inline`` it records the jobs this request
+    enqueues and delivers the email ones in a background task after the response is sent
+    (see ``app.workers.inline``). Error responses carry no background tasks, so nothing runs
+    for a request that failed. Must be async: it sets a context variable for the request."""
+    if settings.email_delivery != "inline":
+        stop_collecting()
+        return
+    background_tasks.add_task(deliver_enqueued_jobs, start_collecting())
 
 
 def get_client_info(request: Request) -> ClientInfo:

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +31,7 @@ from app.repositories.attachments import AttachmentRepository
 from app.repositories.system import AuditRepository
 from app.schemas.attachments import AttachmentOut
 from app.services.auth import ClientInfo
-from app.services.storage import LocalFileStorage, process_receipt
+from app.services.storage import StoredFile, discard, get_storage, process_receipt
 
 MAX_ATTACHMENTS_PER_TRANSACTION = 10
 RECEIPT_FOLDER = "receipts"
@@ -41,7 +40,7 @@ IMAGE_WORKERS = 2  # shares the "image" thread limiter with avatar processing
 
 @dataclass(frozen=True)
 class AttachmentFile:
-    path: Path
+    file: StoredFile
     content_type: str
     filename: str
 
@@ -71,7 +70,7 @@ class AttachmentService:
         self.attachments = AttachmentRepository(session)
         self.audit = AuditRepository(session)
         self.limiter = RateLimiter(session)
-        self.storage = LocalFileStorage(settings.upload_dir)
+        self.storage = get_storage(settings)
 
     def _audit(
         self,
@@ -128,7 +127,7 @@ class AttachmentService:
         tx = await self._writable_transaction(user, transaction_id, for_update=True)
         if await self.attachments.count_live(tx.id) >= MAX_ATTACHMENTS_PER_TRANSACTION:
             raise AttachmentLimitError()
-        key = self.storage.save(RECEIPT_FOLDER, processed.data, processed.ext)
+        key = await self.storage.save(RECEIPT_FOLDER, processed.data, processed.ext)
         try:
             attachment = TransactionAttachment(
                 transaction_id=tx.id,
@@ -142,7 +141,7 @@ class AttachmentService:
             self._audit("transaction.attachment_added", user, client, tx, attachment)
             await self.db.commit()
         except BaseException:
-            self.storage.delete(key)  # no orphaned files when the DB write fails
+            await discard(self.storage, key)  # no orphaned files when the DB write fails
             raise
         await self.db.refresh(attachment)
         return attachment_out(attachment)
@@ -158,12 +157,12 @@ class AttachmentService:
     ) -> AttachmentFile:
         tx = await self._visible_transaction(user, transaction_id)
         attachment = await self.attachments.get_live(tx.id, attachment_id)
-        path = self.storage.path_for(attachment.storage_key) if attachment else None
-        if attachment is None or path is None:
+        stored = await self.storage.open(attachment.storage_key) if attachment else None
+        if attachment is None or stored is None:
             raise NotFoundError("Attachment not found")
         ext = "pdf" if attachment.content_type == "application/pdf" else "jpg"
         return AttachmentFile(
-            path=path,
+            file=stored,
             content_type=attachment.content_type,
             filename=f"receipt-{str(attachment.id)[:8]}.{ext}",
         )

@@ -10,6 +10,8 @@ import asyncio
 import contextlib
 import re
 import signal
+import uuid
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -50,12 +52,26 @@ def _backoff(attempts: int) -> timedelta:
 
 
 async def process_due_jobs(
-    db: Database, settings: Settings, handlers: dict[str, JobHandler] | None = None
+    db: Database,
+    settings: Settings,
+    handlers: dict[str, JobHandler] | None = None,
+    *,
+    batch_size: int | None = None,
+    job_ids: Sequence[uuid.UUID] | None = None,
+    kinds: Collection[str] | None = None,
 ) -> int:
-    """Claim and run one batch of due jobs. Returns how many jobs were attempted."""
+    """Claim and run one batch of due jobs. Returns how many jobs were attempted.
+
+    ``job_ids``/``kinds`` restrict the claim (inline email delivery runs exactly the jobs its
+    request enqueued); anything not claimed here stays queued for the worker / cron tick."""
     handlers = handlers if handlers is not None else HANDLERS
+    limit = batch_size or settings.worker_batch_size
+    if job_ids is not None:
+        if not job_ids:
+            return 0
+        limit = len(job_ids)
     async with db.sessionmaker() as session:
-        jobs = await JobRepository(session).claim_batch(utcnow(), settings.worker_batch_size)
+        jobs = await JobRepository(session).claim_batch(utcnow(), limit, ids=job_ids, kinds=kinds)
         claimed = [(j.id, j.kind, dict(j.payload), j.attempts, j.max_attempts) for j in jobs]
         await session.commit()
 

@@ -1,0 +1,14 @@
+# Files never uploaded to Vercel when deploying from backend/ (see docs/VERCEL.md).
+.env
+.env.*
+.venv/
+venv/
+data/
+tests/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+Dockerfile
+requirements-dev.in
+requirements-dev.txt

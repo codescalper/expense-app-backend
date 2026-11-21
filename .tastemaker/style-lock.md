@@ -100,3 +100,43 @@ exact, calm, warm-confident
 - No white labels on semantic/accent fills in dark mode.
 - No em dashes in shipped copy (gate fails on them).
 - No new font weights/families beyond the 4 embedded files.
+
+## Build stamp
+2026-11-20, design-system consolidation pass (after the four-screen redesign). Gates run from
+`mobile/` with the tastemaker scripts; scores are from a code walk of each main screen, not from
+device screenshots.
+
+### Gate outputs
+```
+python anti_slop_scan.py src __tests__       Anti-slop scan passed: scanned 253 files.   (0 HIGH, 0 MEDIUM)
+python audit_motion.py src                   Motion audit passed: scanned 221 files.
+python check_component_coherence.py src      Component coherence check passed: scanned 221 files, one icon family / one motion engine / scale tokens in use.
+grep raw hex / rgba() outside src/theme      none (colour maths moved to src/theme/color.ts)
+grep fontWeight outside AppText / theme      none (navigation font map moved to src/theme/fonts.ts)
+grep emoji characters in src / __tests__     none (legacy goal pictographs stay as \u{...} code points in planning/format.ts, mapped to kit Icons)
+grep em dash in src / __tests__              none
+grep Animated.loop / withRepeat / repeat:-1  none
+npx tsc --noEmit                             exit 0
+npx expo lint                                exit 0
+npx jest                                     30 suites, 519 tests passed (two consecutive full runs)
+npx expo export --platform android           1923 modules, one Hermes bundle 5.7 MB (5,707,036 bytes)
+```
+
+### Self-critique (main screens: Home, Transactions, Budgets, Reports, Profile, UPI pay/confirm, transaction form)
+| Criterion | Score | Notes |
+|---|---|---|
+| Hierarchy | 4 | Home now has one hero numeral (balance, 34); net savings and the budget summary there step down to `title` (22). Detail screens keep one hero per card. |
+| Consistency | 4 | One entrance (`Entrance`/`useFirstLoad`), one refresh container (`RefreshScreen`), one `SwitchRow`, one divider rule (`inset` / `inset="card"`), one category tile. Key/value detail cards use 8px vertical card padding vs 4 on row groups (denser rows, kept on purpose). |
+| Restraint | 4 | Accent fill only on the UPI pay action (Home tile + `Button variant="accent"`). Icons added only to edit/delete/share/export actions. Home still carries both the UPI tile and the quick-add FAB. |
+| Specificity | 4 | Exact figures and statuses; India-first copy; placeholder test data replaced with a realistic payee. |
+| Color harmony | 4 | Contract re-checked: no primary-coloured text (AppText remaps), `onPrimarySoft` on every primarySoft selection, `onAccent`/`onDanger` on solid fills, EmptyState tile icon moved to `onPrimarySoft`. |
+| Typography | 4 | Inter tabular on every amount (Button labels now tabular too); Unbounded limited to titles, the hero and secondary card figures at `title`. |
+| Spatial accuracy | 4 | 20 gutter / 20 card padding / 16 between cards / 28 between sections via `RefreshScreen` and `Screen`; savings contributions divider fixed (was 68 inside a padded card, now 52). |
+
+States: every list on these screens has a skeleton (static), an `ErrorState`/Banner and an empty state;
+Reports cards carry their own skeleton/error/empty through `ReportCard`.
+
+### Open items
+- The Android export bundles `MaterialSymbols_400Regular.ttf` (976 KB) for the NativeTabs `md` icons,
+  a fifth font file against the "only 4 font files" rule; needs a build/dependency decision.
+- `ActivityIndicator` remains for pagination footers and in-button busy states (never first loads).

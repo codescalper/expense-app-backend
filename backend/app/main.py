@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from app.api.deps import inline_job_delivery
+from app.api.internal import router as internal_router
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
@@ -24,7 +26,15 @@ MAX_REQUEST_BYTES = 10 * 1024 * 1024
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    log.info("startup", environment=settings.environment)
+    log.info(
+        "startup",
+        environment=settings.environment,
+        serverless=settings.serverless,
+        email_delivery=settings.email_delivery,
+        storage_backend=settings.storage_backend,
+    )
+    for warning in settings.deployment_warnings():
+        log.warning("config_warning", detail=warning)
     yield
     await close_database()
 
@@ -74,7 +84,12 @@ def create_app() -> FastAPI:
             return JSONResponse({"status": "unavailable", "database": "down"}, status_code=503)
         return JSONResponse({"status": "ok", "database": "up"})
 
-    app.include_router(api_router, prefix=settings.api_v1_prefix)
+    app.include_router(
+        api_router,
+        prefix=settings.api_v1_prefix,
+        dependencies=[Depends(inline_job_delivery)],
+    )
+    app.include_router(internal_router)
     return app
 
 

@@ -15,6 +15,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 Environment = Literal["development", "test", "staging", "production"]
 
 _INSECURE_SECRET_MARKERS = ("change-me", "change_me", "replace_me", "replace-me", "dev-only")
+# Vercel Functions reject request bodies above 4.5 MB (FUNCTION_PAYLOAD_TOO_LARGE).
+VERCEL_MAX_BODY_BYTES = 4_500_000
 
 
 class Settings(BaseSettings):
@@ -35,6 +37,33 @@ class Settings(BaseSettings):
     # FORWARDED_ALLOW_IPS environment variable itself; it is declared here so a dangerous
     # value stops the app from starting.
     forwarded_allow_ips: str = "127.0.0.1"
+
+    # --- Serverless / Vercel (all opt-in; docker-compose/self-host leaves them at defaults) ---
+    # Short-lived instances: no SQLAlchemy connection pool (NullPool), nothing kept between
+    # invocations. Use with Neon's pooled (-pooler) URL and DB_PGBOUNCER=true.
+    serverless: bool = False
+    # queue: requests only enqueue send_email jobs; a worker / the cron tick sends them.
+    # inline: the same jobs are also delivered right after the response (FastAPI background
+    # task) by the instance that handled the request; failures stay queued for the cron tick.
+    email_delivery: Literal["queue", "inline"] = "queue"
+    # Enables GET/POST /internal/cron/tick (Authorization: Bearer <CRON_SECRET>); unset = 404.
+    cron_secret: SecretStr | None = None
+    cron_time_budget_seconds: float = Field(default=50.0, ge=5, le=800)
+    # local: files under UPLOAD_DIR. s3: a private bucket on an S3-compatible service (e.g.
+    # Neon object storage; path-style, SigV4). vercel_blob: a PRIVATE Vercel Blob store.
+    storage_backend: Literal["local", "s3", "vercel_blob"] = "local"
+    s3_endpoint_url: str | None = None
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: SecretStr | None = None
+    s3_region: str = "us-east-1"
+    s3_bucket: str | None = None
+    blob_read_write_token: SecretStr | None = None
+    blob_api_url: str = "https://vercel.com/api/blob"
+    # Take the client IP from Vercel's proxy headers (x-vercel-forwarded-for / x-real-ip /
+    # x-forwarded-for). Only safe when every request reaches the app through Vercel.
+    trust_vercel_proxy: bool = False
+    # Set by the Vercel runtime itself (VERCEL=1); never set it by hand.
+    vercel: bool = False
 
     # --- Database ----------------------------------------------------------
     database_url: str
@@ -147,7 +176,102 @@ class Settings(BaseSettings):
                     "FORWARDED_ALLOW_IPS='*' trusts X-Forwarded-For from any client (IP "
                     "spoofing defeats per-IP limits); list your proxy addresses instead"
                 )
+        self._check_serverless()
         return self
+
+    def _check_serverless(self) -> None:
+        if self.storage_backend == "vercel_blob" and not self.blob_read_write_token:
+            raise ValueError("STORAGE_BACKEND=vercel_blob requires BLOB_READ_WRITE_TOKEN")
+        if self.storage_backend == "s3":
+            missing_s3 = [
+                name
+                for name, value in (
+                    ("S3_ENDPOINT_URL", self.s3_endpoint_url),
+                    ("S3_ACCESS_KEY_ID", self.s3_access_key_id),
+                    ("S3_SECRET_ACCESS_KEY", self.s3_secret_access_key),
+                    ("S3_BUCKET", self.s3_bucket),
+                    ("S3_REGION", self.s3_region),
+                )
+                if not value
+            ]
+            if missing_s3:
+                raise ValueError("STORAGE_BACKEND=s3 requires " + ", ".join(missing_s3))
+            endpoint = self.s3_endpoint_url or ""
+            if self.is_production_like and not endpoint.startswith("https://"):
+                raise ValueError("S3_ENDPOINT_URL must use https:// outside development")
+        if self.cron_secret is not None:
+            secret = self.cron_secret.get_secret_value()
+            if len(secret) < 16 or not secret.isascii() or not secret.isalnum():
+                raise ValueError(
+                    "CRON_SECRET must be at least 16 letters/digits (it is sent in an HTTP header)"
+                )
+        if self.vercel and self.is_production_like:
+            # Production on Vercel: these are not optional. Local disk is wiped between
+            # invocations, there is no long-running worker (queued emails would wait for the
+            # next cron tick, past their codes' expiry) and no stable connection-pool lifetime.
+            missing = [
+                name
+                for name, ok in (
+                    ("SERVERLESS=true", self.serverless),
+                    ("EMAIL_DELIVERY=inline", self.email_delivery == "inline"),
+                    (
+                        "STORAGE_BACKEND=s3 or vercel_blob",
+                        self.storage_backend in ("s3", "vercel_blob"),
+                    ),
+                    ("CRON_SECRET", self.cron_secret is not None),
+                )
+                if not ok
+            ]
+            if missing:
+                raise ValueError(
+                    "Running on Vercel in "
+                    + self.environment
+                    + " requires "
+                    + ", ".join(missing)
+                    + " (see docs/VERCEL.md)"
+                )
+
+    def deployment_warnings(self) -> list[str]:
+        """Non-fatal configuration problems, logged once at start-up."""
+        warnings: list[str] = []
+        if self.vercel:
+            if self.email_delivery != "inline":
+                warnings.append(
+                    "EMAIL_DELIVERY=queue on Vercel: emails are only sent by the cron tick "
+                    "(daily on Hobby). Set EMAIL_DELIVERY=inline"
+                )
+            if self.cron_secret is None:
+                warnings.append(
+                    "CRON_SECRET is unset on Vercel: /internal/cron/tick is disabled, so "
+                    "housekeeping, push notifications and reminders never run"
+                )
+            if not self.trust_vercel_proxy:
+                warnings.append(
+                    "TRUST_VERCEL_PROXY is off on Vercel: per-IP rate limits and audit logs may "
+                    "not see the real client address"
+                )
+            if self.max_receipt_bytes > VERCEL_MAX_BODY_BYTES - 64 * 1024:
+                warnings.append(
+                    "MAX_RECEIPT_BYTES is above what Vercel accepts in one request (4.5 MB); "
+                    "larger uploads fail with 413 before reaching the app. Use 4194304"
+                )
+            if not self.serverless:
+                warnings.append("SERVERLESS is off on Vercel: set SERVERLESS=true")
+            if self.storage_backend == "local":
+                warnings.append(
+                    "STORAGE_BACKEND=local on Vercel: uploaded files are lost between invocations"
+                )
+        elif self.trust_vercel_proxy:
+            warnings.append(
+                "TRUST_VERCEL_PROXY=true outside Vercel: clients can spoof their IP with "
+                "X-Forwarded-For unless a proxy you control overwrites it"
+            )
+        if self.serverless and not self.db_pgbouncer:
+            warnings.append(
+                "SERVERLESS=true without DB_PGBOUNCER=true: every request opens a direct "
+                "connection; use Neon's pooled (-pooler) URL with DB_PGBOUNCER=true"
+            )
+        return warnings
 
 
 def normalize_async_db_url(raw_url: str) -> tuple[str, dict[str, Any]]:

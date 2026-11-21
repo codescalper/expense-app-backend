@@ -198,8 +198,36 @@ class RateLimiter:
             await session.execute(delete(RateLimitCounter).where(RateLimitCounter.key.in_(keys)))
 
 
+# Vercel overwrites these on every request (clients can't spoof them through Vercel);
+# x-vercel-forwarded-for survives another proxy in front of Vercel, so it is checked first.
+_VERCEL_IP_HEADERS = ("x-vercel-forwarded-for", "x-real-ip", "x-forwarded-for")
+
+
+def _vercel_client_ip(request: Request) -> str | None:
+    for header in _VERCEL_IP_HEADERS:
+        value = request.headers.get(header)
+        if not value:
+            continue
+        candidate = value.split(",", 1)[0].strip()
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+    return None
+
+
 def client_ip(request: Request) -> str:
-    # uvicorn --proxy-headers already rewrites request.client from trusted X-Forwarded-For.
+    """The caller's IP for rate limits, sessions and audit rows.
+
+    Self-hosted: uvicorn --proxy-headers already rewrote ``request.client`` from a trusted
+    X-Forwarded-For (FORWARDED_ALLOW_IPS). On Vercel there is no uvicorn: with
+    TRUST_VERCEL_PROXY=true the address comes from Vercel's own proxy headers instead. Never
+    enable that where clients can reach the app without going through Vercel.
+    """
+    if get_settings().trust_vercel_proxy:
+        ip = _vercel_client_ip(request)
+        if ip is not None:
+            return ip
     return request.client.host if request.client else "unknown"
 
 

@@ -108,7 +108,7 @@ All per-user limits answer **429** `rate_limited` with a `Retry-After` header.
 | `SMTP_USE_TLS` | `false` | Implicit TLS (port 465) | `true` for 465. Don't set both |
 | `EMAIL_FROM` | `Family Budget <no-reply@familybudget.local>` | From header | A domain you control with SPF/DKIM/DMARC set up |
 
-Only the **worker** sends email. The API only enqueues jobs.
+With `EMAIL_DELIVERY=queue` (default) only the **worker** (or the cron tick) sends email and the API only enqueues jobs. With `EMAIL_DELIVERY=inline` the API also delivers its own queued jobs right after the response (see [Serverless / Vercel](#serverless--vercel)).
 
 ### Files
 
@@ -117,6 +117,27 @@ Only the **worker** sends email. The API only enqueues jobs.
 | `UPLOAD_DIR` | `./data/uploads` | Root directory for avatars, family images and receipts (relative paths resolve from the working directory) | `/data/uploads` with a persistent volume mounted there. The `prod` image creates `/data/uploads` owned by the non-root `app` user. The default relative path would resolve to `/app/data/uploads`, which that user can't create |
 | `MAX_AVATAR_BYTES` | `2097152` (2 MiB) | Max avatar / family image upload size (413 above it) | Default |
 | `MAX_RECEIPT_BYTES` | `5242880` (5 MiB) | Max receipt attachment size (1 KiB – 50 MiB; 413 above it). Read with a hard cap, never buffered beyond limit + 1 byte | Default. Also keep the proxy's body limit above it |
+
+### Serverless / Vercel
+
+All opt-in; the defaults are the docker-compose / self-hosted behaviour. Full guide:
+[VERCEL.md](VERCEL.md).
+
+| Variable | Default | Meaning | Production guidance |
+|---|---|---|---|
+| `SERVERLESS` | `false` | No SQLAlchemy pool (`NullPool`): each session opens one connection and closes it. Nothing connects at import | `true` on Vercel, with Neon's pooled URL and `DB_PGBOUNCER=true` |
+| `EMAIL_DELIVERY` | `queue` | `queue`: requests only enqueue `send_email` jobs (worker / cron sends them). `inline`: the same jobs are delivered by a background task right after the response, through the worker code path (expiry, payload wipe, retry); failures stay queued for the cron tick | `inline` on Vercel (required in staging/production there) |
+| `CRON_SECRET` | *(unset)* | Enables `GET/POST /internal/cron/tick` with `Authorization: Bearer <secret>` (constant-time check, 401 otherwise). Unset: the endpoint is a 404. At least 16 letters/digits (secret) | Set on Vercel (required in staging/production there) |
+| `CRON_TIME_BUDGET_SECONDS` | `50` | Time budget of one tick (5–800). Must stay below the function's `maxDuration` (60 s in `backend/vercel.json`) and any pinger timeout | Default; `25` for a pinger with a 30 s timeout |
+| `STORAGE_BACKEND` | `local` | `local` (`UPLOAD_DIR`), `s3` (private bucket on an S3-compatible service, path-style, SigV4) or `vercel_blob` (private Vercel Blob store) | `s3` or `vercel_blob` on Vercel (required in staging/production there) |
+| `S3_ENDPOINT_URL` | *(unset)* | S3 API endpoint, e.g. Neon object storage `https://<id>.storage.<cell>.<region>.aws.neon.tech`. Must be `https://` in staging/production | Required with `s3` |
+| `S3_REGION` | `us-east-1` | SigV4 signing region | The bucket's region (Neon: e.g. `us-east-2`) |
+| `S3_BUCKET` | *(unset)* | Bucket name (objects are written without ACLs, i.e. private) | Required with `s3` |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | *(unset)* | Credentials (secret) | Required with `s3`; secret store only |
+| `BLOB_READ_WRITE_TOKEN` | *(unset)* | Read-write token of a **private** Vercel Blob store (secret) | Required with `vercel_blob` |
+| `BLOB_API_URL` | `https://vercel.com/api/blob` | Vercel Blob API base URL | Leave as is |
+| `TRUST_VERCEL_PROXY` | `false` | Take the client IP from `x-vercel-forwarded-for` / `x-real-ip` / `x-forwarded-for` (Vercel overwrites them). Clients can spoof these anywhere else | `true` on Vercel only |
+| `VERCEL` | *(set by Vercel)* | `1` inside Vercel; turns on the Vercel checks above. Never set it yourself | — |
 
 ### Push notifications (Expo)
 

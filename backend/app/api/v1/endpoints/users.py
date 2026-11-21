@@ -3,9 +3,10 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, File, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 
 from app.api.deps import AppSettings, Client, CurrentPrincipal, UserSvc
+from app.api.files import stored_file_response
 from app.core.errors import PayloadTooLargeError
 from app.schemas.user import (
     ChangePasswordRequest,
@@ -59,11 +60,12 @@ async def upload_avatar(
     return UserOut.from_user(user)
 
 
-@router.get("/avatar", response_class=FileResponse)
-async def get_avatar(principal: CurrentPrincipal, svc: UserSvc) -> FileResponse:
-    return FileResponse(
-        svc.avatar_path(principal.user),
+@router.get("/avatar", response_class=Response)
+async def get_avatar(principal: CurrentPrincipal, svc: UserSvc) -> Response:
+    return stored_file_response(
+        await svc.avatar_file(principal.user),
         media_type="image/jpeg",
+        disposition="inline",
         headers={"Cache-Control": "private, max-age=300"},
     )
 

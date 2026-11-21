@@ -1,7 +1,16 @@
 """File storage for user uploads (avatars, family images, receipts).
 
-Local disk implementation behind a tiny interface so S3-compatible storage can be added later.
-Keys are generated server-side and validated, so callers can never address arbitrary paths.
+``FileStorage`` is the small async interface the avatar, family-image and receipt code uses.
+Two implementations, picked by ``STORAGE_BACKEND`` (:func:`get_storage`):
+
+* ``local`` (default): files under ``UPLOAD_DIR`` (docker compose / self-hosted).
+* ``s3``: a private bucket on an S3-compatible service such as Neon object storage
+  (``app/services/s3_storage.py``), for serverless deployments whose disk doesn't survive
+  an invocation.
+* ``vercel_blob``: a *private* Vercel Blob store (``app/services/blob_storage.py``).
+
+Keys are generated server-side (``<folder>/<random>.<ext>``) and validated, so callers can never
+address arbitrary paths. Files are only ever served through our authenticated endpoints.
 """
 
 from __future__ import annotations
@@ -10,14 +19,28 @@ import io
 import re
 import secrets
 import zlib
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from app.core.errors import BadRequestError, PayloadTooLargeError
+from app.core.errors import AppError, BadRequestError, PayloadTooLargeError
+from app.core.logging import get_logger
+
+if TYPE_CHECKING:
+    from app.core.config import Settings
+
+log = get_logger(__name__)
 
 _KEY_RE = re.compile(r"^[a-z]+/[A-Za-z0-9_-]{16,64}\.(jpg|png|webp|pdf)$")
+CONTENT_TYPES = {
+    "jpg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+}
 ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
 MAX_IMAGE_PIXELS = 25_000_000  # Pillow's global decompression-bomb guard (all uploads)
 MAX_AVATAR_PIXELS = 4096 * 4096  # ~16.7 MP: checked from the header, before decoding
@@ -26,32 +49,117 @@ AVATAR_SIZE = 512
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 
+class StorageError(AppError):
+    """The storage backend failed (network, quota...). Details go to the log, not the client."""
+
+    status_code = 503
+    code = "storage_unavailable"
+    message = "File storage is temporarily unavailable. Please try again."
+
+
+def validate_key(key: str) -> None:
+    if not _KEY_RE.match(key):
+        raise BadRequestError("Invalid file key", code="invalid_file_key")
+
+
+def new_key(folder: str, ext: str) -> str:
+    """A fresh, unguessable key (192 random bits)."""
+    key = f"{folder}/{secrets.token_urlsafe(24)}.{ext}"
+    validate_key(key)
+    return key
+
+
+@dataclass(frozen=True)
+class StoredFile:
+    """A stored file ready to be sent: a local ``path`` or a stream of ``chunks`` (+ ``close``,
+    which must run once the response is done; see ``app.api.files.stored_file_response``)."""
+
+    path: Path | None = None
+    chunks: AsyncIterator[bytes] | None = None
+    close: Callable[[], Awaitable[None]] | None = None
+
+
+class FileStorage(Protocol):
+    async def save(self, folder: str, data: bytes, ext: str) -> str:
+        """Store ``data`` under a new key in ``folder``; returns the key."""
+        ...
+
+    async def open(self, key: str) -> StoredFile | None:
+        """The stored file, or None if it doesn't exist."""
+        ...
+
+    async def delete(self, key: str) -> None:
+        """Remove the file (missing files are fine)."""
+        ...
+
+
 class LocalFileStorage:
     def __init__(self, base_dir: str) -> None:
         self.base = Path(base_dir).resolve()
 
     def _path(self, key: str) -> Path:
-        if not _KEY_RE.match(key):
-            raise BadRequestError("Invalid file key", code="invalid_file_key")
+        validate_key(key)
         path = (self.base / key).resolve()
         if self.base not in path.parents:
             raise BadRequestError("Invalid file key", code="invalid_file_key")
         return path
 
-    def save(self, folder: str, data: bytes, ext: str) -> str:
-        key = f"{folder}/{secrets.token_urlsafe(24)}.{ext}"
+    def path_for(self, key: str) -> Path | None:
+        path = self._path(key)
+        return path if path.is_file() else None
+
+    async def save(self, folder: str, data: bytes, ext: str) -> str:
+        key = new_key(folder, ext)
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return key
 
-    def path_for(self, key: str) -> Path | None:
-        path = self._path(key)
-        return path if path.is_file() else None
+    async def open(self, key: str) -> StoredFile | None:
+        path = self.path_for(key)
+        return StoredFile(path=path) if path is not None else None
 
-    def delete(self, key: str) -> None:
-        path = self._path(key)
-        path.unlink(missing_ok=True)
+    async def delete(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
+
+def get_storage(settings: Settings) -> FileStorage:
+    if settings.storage_backend == "s3":
+        from app.services.s3_storage import S3Storage
+
+        # All present: enforced by Settings validation.
+        if (
+            settings.s3_endpoint_url is None
+            or settings.s3_bucket is None
+            or settings.s3_access_key_id is None
+            or settings.s3_secret_access_key is None
+        ):
+            raise RuntimeError("STORAGE_BACKEND=s3 requires the S3_* settings")
+        return S3Storage(
+            endpoint_url=settings.s3_endpoint_url,
+            bucket=settings.s3_bucket,
+            region=settings.s3_region,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        )
+    if settings.storage_backend == "vercel_blob":
+        from app.services.blob_storage import VercelBlobStorage
+
+        if settings.blob_read_write_token is None:  # also enforced by Settings validation
+            raise RuntimeError("STORAGE_BACKEND=vercel_blob requires BLOB_READ_WRITE_TOKEN")
+        return VercelBlobStorage(
+            settings.blob_read_write_token.get_secret_value(), api_url=settings.blob_api_url
+        )
+    return LocalFileStorage(settings.upload_dir)
+
+
+async def discard(storage: FileStorage, key: str) -> None:
+    """Best-effort delete for files that are already unreferenced (after the DB commit, or
+    cleaning up after a failed write): a storage hiccup must not fail the request."""
+    try:
+        await storage.delete(key)
+    except Exception:  # noqa: BLE001 - an orphaned file is better than a failed request
+        log.warning("storage_delete_failed", folder=key.split("/", 1)[0])
 
 
 def process_avatar(raw: bytes, max_bytes: int) -> bytes:

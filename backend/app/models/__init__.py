@@ -37,7 +37,13 @@ from app.models.planning import (
     SavingsContribution,
     SavingsGoal,
 )
-from app.models.system import AuditLog, BackgroundJob, JobStatus, RateLimitCounter
+from app.models.system import (
+    AuditLog,
+    BackgroundJob,
+    JobStatus,
+    PeriodicTaskRun,
+    RateLimitCounter,
+)
 from app.models.upi import UpiPaymentAttempt
 from app.models.user import RefreshToken, TokenPurpose, User, UserSession, UserToken
 
@@ -65,6 +71,7 @@ __all__ = [
     "NotificationPreference",
     "Payee",
     "PaymentMethod",
+    "PeriodicTaskRun",
     "PushStatus",
     "RateLimitCounter",
     "RecordScope",

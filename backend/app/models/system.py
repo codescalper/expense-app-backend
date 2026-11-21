@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Enum, Index, String, Text, text
+from sqlalchemy import Enum, Index, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, CreatedAtMixin, UUIDPkMixin
@@ -89,3 +89,18 @@ class BackgroundJob(UUIDPkMixin, CreatedAtMixin, Base):
     finished_at: Mapped[datetime | None]
     last_error: Mapped[str | None] = mapped_column(Text)
     dedupe_key: Mapped[str | None] = mapped_column(String(200))
+
+
+class PeriodicTaskRun(Base):
+    """Last run of each periodic task, for the cron tick (``app/workers/cron.py``).
+
+    The long-running worker keeps this in memory; serverless deployments have no memory
+    between invocations, so ``/internal/cron/tick`` reads and writes it here instead.
+    """
+
+    __tablename__ = "periodic_task_runs"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_run_at: Mapped[datetime]
+    last_status: Mapped[str] = mapped_column(String(16))
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

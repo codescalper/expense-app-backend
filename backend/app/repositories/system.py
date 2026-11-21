@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection, Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import redact
+from app.core.outbox import record_enqueued
 from app.models.system import AuditLog, BackgroundJob, JobStatus, RateLimitCounter
 from app.models.user import RefreshToken, UserSession, UserToken
 
@@ -58,7 +60,11 @@ class JobRepository:
         run_at: datetime | None = None,
         max_attempts: int | None = None,
         dedupe_key: str | None = None,
-    ) -> None:
+    ) -> uuid.UUID | None:
+        """Insert a job; returns its id (None when ``dedupe_key`` already exists).
+
+        The id is also recorded for the current request (``app.core.outbox``) so
+        ``EMAIL_DELIVERY=inline`` can deliver it right after the response."""
         values: dict[str, Any] = {
             "kind": kind,
             "payload": payload,
@@ -73,17 +79,33 @@ class JobRepository:
                 index_elements=[BackgroundJob.dedupe_key],
                 index_where=BackgroundJob.dedupe_key.is_not(None),
             )
-        await self.session.execute(stmt)
+        job_id = (await self.session.execute(stmt.returning(BackgroundJob.id))).scalar()
+        if job_id is not None:
+            record_enqueued(job_id)
+        return job_id
 
-    async def claim_batch(self, now: datetime, limit: int) -> list[BackgroundJob]:
-        """Lock runnable jobs; concurrent workers skip rows another worker holds."""
+    async def claim_batch(
+        self,
+        now: datetime,
+        limit: int,
+        *,
+        ids: Sequence[uuid.UUID] | None = None,
+        kinds: Collection[str] | None = None,
+    ) -> list[BackgroundJob]:
+        """Lock runnable jobs; concurrent workers skip rows another worker holds.
+
+        ``ids`` targets specific just-enqueued jobs (inline delivery): those are claimed even
+        if the database clock put their ``run_at`` a moment ahead of ours."""
+        query = select(BackgroundJob).where(BackgroundJob.status == JobStatus.PENDING)
+        if ids is not None:
+            query = query.where(BackgroundJob.id.in_(list(ids)))
+        else:
+            query = query.where(BackgroundJob.run_at <= now)
+        if kinds is not None:
+            query = query.where(BackgroundJob.kind.in_(list(kinds)))
         jobs = list(
             await self.session.scalars(
-                select(BackgroundJob)
-                .where(BackgroundJob.status == JobStatus.PENDING, BackgroundJob.run_at <= now)
-                .order_by(BackgroundJob.run_at)
-                .limit(limit)
-                .with_for_update(skip_locked=True)
+                query.order_by(BackgroundJob.run_at).limit(limit).with_for_update(skip_locked=True)
             )
         )
         for job in jobs:

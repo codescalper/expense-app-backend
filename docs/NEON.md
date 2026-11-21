@@ -61,7 +61,12 @@ a different server connection, so asyncpg's per-connection prepared-statement ca
 flag sets `statement_cache_size=0` and gives each prepared statement a unique name
 (`backend/app/db/session.py`). Everything the app relies on still works through the pooler:
 `SELECT ... FOR UPDATE SKIP LOCKED`, `INSERT ... ON CONFLICT` and row locks all live inside a
-single transaction. The app uses no session-level state, advisory locks or `LISTEN/NOTIFY`.
+single transaction. The app uses no session-level state or `LISTEN/NOTIFY`, and only
+**transaction-scoped** advisory locks (`pg_advisory_xact_lock` / `pg_try_advisory_xact_lock`:
+UPI idempotency and the cron tick), which are safe through a transaction pooler.
+
+On Vercel (`SERVERLESS=true`) the app keeps no pool of its own (`NullPool`) and relies entirely
+on the pooled host; see [VERCEL.md](VERCEL.md).
 
 Why the direct URL for Alembic: migrations are long-lived DDL sessions and should not go
 through a transaction pooler. `alembic/env.py` uses `DATABASE_MIGRATION_URL` (falling back to

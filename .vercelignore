@@ -1,0 +1,17 @@
+# Files never uploaded to Vercel when deploying from the repository root with the project's
+# Root Directory set to "backend" (see docs/VERCEL.md). Secrets and unrelated folders stay local.
+.env
+.env.*
+mobile/
+infra/
+backups/
+.github/
+.tastemaker/
+**/node_modules/
+backend/.venv/
+backend/data/
+backend/tests/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/

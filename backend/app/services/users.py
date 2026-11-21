@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +24,7 @@ from app.repositories.users import SessionRepository
 from app.schemas.user import ChangePasswordRequest, SessionOut, UserUpdate
 from app.services.auth import ClientInfo
 from app.services.notifications import disable_tokens_for_sessions, disable_tokens_for_user
-from app.services.storage import LocalFileStorage, process_avatar
+from app.services.storage import StoredFile, discard, get_storage, process_avatar
 
 # Image decoding is CPU- and memory-heavy (up to ~50 MB for a 16.7 MP RGB image).
 IMAGE_WORKERS = 2
@@ -39,7 +38,7 @@ class UserService:
         self.settings = settings
         self.sessions = SessionRepository(session)
         self.audit = AuditRepository(session)
-        self.storage = LocalFileStorage(settings.upload_dir)
+        self.storage = get_storage(settings)
         # Shares the request's connection/transaction (see app.core.rate_limit).
         self.limiter = RateLimiter(session)
 
@@ -122,11 +121,16 @@ class UserService:
             "image", IMAGE_WORKERS, process_avatar, raw, self.settings.max_avatar_bytes
         )
         old_key = user.avatar_key
-        user.avatar_key = self.storage.save("avatars", image, "jpg")
-        self._audit("user.avatar_updated", user, client)
-        await self.db.commit()
+        new_key = await self.storage.save("avatars", image, "jpg")
+        try:
+            user.avatar_key = new_key
+            self._audit("user.avatar_updated", user, client)
+            await self.db.commit()
+        except BaseException:
+            await discard(self.storage, new_key)  # no orphaned file when the DB write fails
+            raise
         if old_key:
-            self.storage.delete(old_key)
+            await discard(self.storage, old_key)
         return user
 
     async def remove_avatar(self, user: User, client: ClientInfo) -> None:
@@ -135,13 +139,13 @@ class UserService:
             user.avatar_key = None
             self._audit("user.avatar_removed", user, client)
             await self.db.commit()
-            self.storage.delete(old_key)
+            await discard(self.storage, old_key)
 
-    def avatar_path(self, user: User) -> Path:
-        path = self.storage.path_for(user.avatar_key) if user.avatar_key else None
-        if path is None:
+    async def avatar_file(self, user: User) -> StoredFile:
+        stored = await self.storage.open(user.avatar_key) if user.avatar_key else None
+        if stored is None:
             raise NotFoundError("No avatar")
-        return path
+        return stored
 
     # --- sessions -------------------------------------------------------------------
 
@@ -193,4 +197,4 @@ class UserService:
         )
         await self.db.commit()
         if avatar_key:
-            self.storage.delete(avatar_key)
+            await discard(self.storage, avatar_key)

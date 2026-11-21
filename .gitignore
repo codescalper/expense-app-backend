@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+!.env.vercel.example
+# Vercel CLI link state (project/org ids; created by `vercel link`)
+.vercel/
 *.pem
 *.key
 
@@ -26,6 +29,9 @@ uploads/
 
 # Node
 node_modules/
+
+# Release artifacts (APKs from mobile/scripts/build-apk.ps1)
+/dist/
 
 # OS / editors
 .DS_Store
